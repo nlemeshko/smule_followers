@@ -20,15 +20,13 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# Каталог для хранения файлов (по умолчанию /app)
+DATA_DIR = os.getenv("DATA_DIR", "/app")
+os.makedirs(DATA_DIR, exist_ok=True)
+
 
 class SmuleFollowersBot:
     def __init__(self, telegram_token: str, chat_id: str, account_ids):
-        """
-        Args:
-            telegram_token: токен Telegram-бота
-            chat_id: чат для уведомлений
-            account_ids: list[str] аккаунтов Smule
-        """
         self.bot = Bot(token=telegram_token)
         self.chat_id = chat_id
         self.account_ids = account_ids if isinstance(account_ids, list) else [account_ids]
@@ -47,20 +45,20 @@ class SmuleFollowersBot:
 
         # Известные подписчики и кэш метаданных
         self.known_followers: dict[str, set[str]] = {}
-        self.followers_meta: dict[str, dict[str, dict]] = {}  # {account_id: {follower_id: info}}
+        self.followers_meta: dict[str, dict[str, dict]] = {}
 
         for account_id in self.account_ids:
             self.known_followers[account_id] = self._load_followers_set(account_id)
             self.followers_meta[account_id] = self._load_followers_meta(account_id)
 
     # ──────────────────────────────────────────────────────────────────────────
-    # Работа с файлами (слепок id и метаданные)
+    # Работа с файлами
     # ──────────────────────────────────────────────────────────────────────────
     def _followers_file(self, account_id: str) -> str:
-        return f"followers_{account_id}.json"
+        return os.path.join(DATA_DIR, f"followers_{account_id}.json")
 
     def _followers_meta_file(self, account_id: str) -> str:
-        return f"followers_meta_{account_id}.json"
+        return os.path.join(DATA_DIR, f"followers_meta_{account_id}.json")
 
     def _load_followers_set(self, account_id: str) -> set:
         fp = self._followers_file(account_id)
@@ -150,7 +148,7 @@ class SmuleFollowersBot:
                 break
 
             offset += limit
-            await asyncio.sleep(0.5)  # мягкий rate-limit
+            await asyncio.sleep(0.5)
 
         return all_followers
 
@@ -206,21 +204,13 @@ class SmuleFollowersBot:
             logger.error(f"Ошибка отправки в Telegram: {e}")
 
     async def _check_account(self, session: aiohttp.ClientSession, account_id: str) -> tuple[int, int]:
-        """
-        Возвращает (new_count, unfollow_count)
-        """
-        logger.info(f"Проверяем подписчиков для аккаунта {account_id}…")
         followers = await self._get_all_followers(session, account_id)
         if not followers:
             logger.warning(f"Не удалось получить список подписчиков для аккаунта {account_id}")
             return (0, 0)
 
-        logger.info(f"Получено {len(followers)} подписчиков для аккаунта {account_id}")
-
         new_count = 0
         current_ids: set[str] = set()
-
-        # карта id → info по текущей выборке
         current_map: dict[str, dict] = {}
 
         for f in followers:
@@ -232,23 +222,19 @@ class SmuleFollowersBot:
             current_ids.add(fid)
             current_map[fid] = info
 
-            # пополним диск метаданных (для будущих отписок)
             self.followers_meta.setdefault(account_id, {})
             self.followers_meta[account_id][fid] = info
 
-            # Новый подписчик
             if fid not in self.known_followers[account_id]:
                 msg = self._format_follow_message(info, account_id)
                 await self._send_text(msg)
                 new_count += 1
                 await asyncio.sleep(0.3)
 
-        # Отписавшиеся (были в слепке, но их нет сейчас)
         unfollowed_ids = self.known_followers[account_id] - current_ids
         unfollow_count = len(unfollowed_ids)
 
         for fid in sorted(unfollowed_ids):
-            # достанем сохранённую мету (если есть), чтобы показать handle/name
             info = self.followers_meta.get(account_id, {}).get(fid, {
                 "account_id": fid, "handle": fid, "name": fid
             })
@@ -256,21 +242,9 @@ class SmuleFollowersBot:
             await self._send_text(msg)
             await asyncio.sleep(0.3)
 
-            # можно по желанию удалять метаданные отписавшихся, но я оставляю
-            # чтобы сохранить историю ников; если хочешь чистить — раскомментируй:
-            # self.followers_meta[account_id].pop(fid, None)
-
-        # Обновим слепок и мету на диск
         self.known_followers[account_id] = current_ids
         self._save_followers_set(account_id)
         self._save_followers_meta(account_id)
-
-        if new_count:
-            logger.info(f"Найдено {new_count} новых подписчиков для {account_id}")
-        else:
-            logger.info(f"Новых подписчиков нет для {account_id}")
-        if unfollow_count:
-            logger.info(f"{unfollow_count} подписчик(ов) отписались от {account_id}")
 
         return (new_count, unfollow_count)
 
@@ -290,7 +264,6 @@ class SmuleFollowersBot:
                     logger.error(f"Ошибка при проверке аккаунта {account_id}: {e}")
                     await self._send_text(f"❌ Ошибка при проверке аккаунта {account_id}: {e}")
 
-            # Итоговая сводка (если было хоть что-то)
             if total_new or total_left:
                 parts = []
                 if total_new:
@@ -300,13 +273,9 @@ class SmuleFollowersBot:
                 await self._send_text(f"📊 Сводка: " + ", ".join(parts))
 
     async def run_continuous(self, check_interval: int = 300) -> None:
-        logger.info(f"Запускаем непрерывную проверку для {len(self.account_ids)} аккаунтов с интервалом {check_interval} секунд")
-        logger.info(f"Отслеживаемые аккаунты: {', '.join(self.account_ids)}")
-
         while True:
             try:
                 await self.check_new_followers()
-                logger.info(f"Ожидаем {check_interval} секунд до следующей проверки…")
                 await asyncio.sleep(check_interval)
             except KeyboardInterrupt:
                 logger.info("Получен сигнал остановки")
@@ -335,22 +304,10 @@ async def main():
 
     if not all([TELEGRAM_TOKEN, CHAT_ID, ACCOUNT_IDS]):
         logger.error("❌ ОШИБКА: Не все обязательные переменные настроены!")
-        logger.error("")
-        logger.error("📝 Пример .env:")
-        logger.error("=" * 50)
-        logger.error("TELEGRAM_TOKEN=ваш_токен_бота")
-        logger.error("CHAT_ID=ваш_chat_id")
-        logger.error("SMULE_ACCOUNT_IDS=96242367,3150102762")
-        logger.error("CHECK_INTERVAL=1800   # каждые 30 минут")
-        logger.error("LOG_LEVEL=INFO")
-        logger.error("=" * 50)
         return
-
-    logger.info(f"Настройки загружены. Будут отслеживаться {len(ACCOUNT_IDS)} аккаунтов: {', '.join(ACCOUNT_IDS)}")
 
     bot = SmuleFollowersBot(TELEGRAM_TOKEN, CHAT_ID, ACCOUNT_IDS)
 
-    # Сообщение о запуске
     startup = [
         "🤖 Бот запущен!",
         f"📊 Отслеживается {len(ACCOUNT_IDS)} аккаунтов:"
