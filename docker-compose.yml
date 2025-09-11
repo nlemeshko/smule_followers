@@ -1,0 +1,12 @@
+services:
+  smule-followers:
+    image: ghcr.io/nlemeshko/smule_followers:latest
+    container_name: smule-followers
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      TZ: Europe/Kyiv
+      DATA_DIR: /data
+    volumes:
+      - ./data:/data
