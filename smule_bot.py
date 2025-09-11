@@ -24,10 +24,17 @@ logger = logging.getLogger(__name__)
 DATA_DIR = os.getenv("DATA_DIR", "/app")
 os.makedirs(DATA_DIR, exist_ok=True)
 
+# Алиасы для аккаунтов
+ACCOUNT_ALIASES = {
+    "96242367": "dsip",
+    "3150102762": "lithiumly"
+}
+
 
 class SmuleFollowersBot:
     def __init__(self, telegram_token: str, chat_id: str, account_ids):
-        self.bot = Bot(token=telegram_token)
+        # Таймаут на 30 секунд
+        self.bot = Bot(token=telegram_token, request_timeout=30)
         self.chat_id = chat_id
         self.account_ids = account_ids if isinstance(account_ids, list) else [account_ids]
 
@@ -167,10 +174,11 @@ class SmuleFollowersBot:
         }
 
     def _format_follow_message(self, info: dict, account_id: str) -> str:
+        alias = ACCOUNT_ALIASES.get(account_id, account_id)
         lines = [
             "🎵 Новый подписчик!",
             "",
-            f"📊 Аккаунт Smule: {account_id}",
+            f"📊 Аккаунт Smule: {alias}",
             f"👤 Имя: {info['name']}",
             f"📝 Ник: @{info['handle']}",
         ]
@@ -185,10 +193,11 @@ class SmuleFollowersBot:
         return "\n".join(lines)
 
     def _format_unfollow_message(self, info: dict, account_id: str) -> str:
+        alias = ACCOUNT_ALIASES.get(account_id, account_id)
         lines = [
             "❌ Подписчик отписался!",
             "",
-            f"📊 Аккаунт Smule: {account_id}",
+            f"📊 Аккаунт Smule: {alias}",
             f"👤 Имя: {info.get('name', 'Unknown')}",
             f"📝 Ник: @{info.get('handle', 'Unknown')}",
             f"🔗 Профиль: https://www.smule.com/{info.get('handle', 'Unknown')}",
@@ -197,11 +206,14 @@ class SmuleFollowersBot:
         return "\n".join(lines)
 
     async def _send_text(self, text: str) -> None:
-        try:
-            await self.bot.send_message(chat_id=self.chat_id, text=text)
-            logger.info("Уведомление отправлено в Telegram")
-        except TelegramError as e:
-            logger.error(f"Ошибка отправки в Telegram: {e}")
+        for attempt in range(3):
+            try:
+                await self.bot.send_message(chat_id=self.chat_id, text=text)
+                logger.info("Уведомление отправлено в Telegram")
+                return
+            except TelegramError as e:
+                logger.error(f"Ошибка отправки в Telegram: {e}")
+                await asyncio.sleep(2 * (attempt + 1))
 
     async def _check_account(self, session: aiohttp.ClientSession, account_id: str) -> tuple[int, int]:
         followers = await self._get_all_followers(session, account_id)
@@ -312,7 +324,7 @@ async def main():
         "🤖 Бот запущен!",
         f"📊 Отслеживается {len(ACCOUNT_IDS)} аккаунтов:"
     ]
-    startup += [f"{i+1}. {acc}" for i, acc in enumerate(ACCOUNT_IDS)]
+    startup += [f"{i+1}. {ACCOUNT_ALIASES.get(acc, acc)}" for i, acc in enumerate(ACCOUNT_IDS)]
     startup.append(f"⏱ Интервал проверки: {CHECK_INTERVAL} секунд")
     await bot._send_text("\n".join(startup))
 
