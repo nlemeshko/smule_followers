@@ -112,7 +112,7 @@ class SmuleFollowersBot:
     # ───────────────────────────────────────────────
     def _build_session(self) -> aiohttp.ClientSession:
         ssl_ctx = ssl.create_default_context(cafile=certifi.where())
-        timeout = aiohttp.ClientTimeout(total=30, connect=15, sock_read=15)
+        timeout = aiohttp.ClientTimeout(total=10, connect=2, sock_read=15)
         connector = aiohttp.TCPConnector(ssl=ssl_ctx, limit=10)
         return aiohttp.ClientSession(connector=connector, timeout=timeout)
 
