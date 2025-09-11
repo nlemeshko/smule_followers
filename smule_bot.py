@@ -4,16 +4,15 @@ import json
 import os
 import ssl
 import certifi
-import httpx
 from telegram import Bot
 from telegram.error import TelegramError
 import logging
 from datetime import datetime
 from dotenv import load_dotenv
 
-# ──────────────────────────────────────────────────────────────
+# ───────────────────────────────────────────────
 # env + логирование
-# ──────────────────────────────────────────────────────────────
+# ───────────────────────────────────────────────
 load_dotenv()
 logging.basicConfig(
     level=logging.INFO,
@@ -34,10 +33,7 @@ ACCOUNT_ALIASES = {
 
 class SmuleFollowersBot:
     def __init__(self, telegram_token: str, chat_id: str, account_ids):
-        # httpx.Client с таймаутом
-        timeout = httpx.Timeout(30.0, read=30.0)
-        client = httpx.Client(timeout=timeout)
-        self.bot = Bot(token=telegram_token, request=Bot.build_request(client=client))
+        self.bot = Bot(token=telegram_token)
 
         self.chat_id = chat_id
         self.account_ids = account_ids if isinstance(account_ids, list) else [account_ids]
@@ -62,9 +58,9 @@ class SmuleFollowersBot:
             self.known_followers[account_id] = self._load_followers_set(account_id)
             self.followers_meta[account_id] = self._load_followers_meta(account_id)
 
-    # ──────────────────────────────────────────────────────────
+    # ───────────────────────────────────────────────
     # Работа с файлами
-    # ──────────────────────────────────────────────────────────
+    # ───────────────────────────────────────────────
     def _followers_file(self, account_id: str) -> str:
         return os.path.join(DATA_DIR, f"followers_{account_id}.json")
 
@@ -111,38 +107,33 @@ class SmuleFollowersBot:
         except Exception as e:
             logger.error(f"Ошибка при сохранении метаданных подписчиков ({account_id}): {e}")
 
-    # ──────────────────────────────────────────────────────────
+    # ───────────────────────────────────────────────
     # HTTP-сессия с валидным CA (certifi)
-    # ──────────────────────────────────────────────────────────
+    # ───────────────────────────────────────────────
     def _build_session(self) -> aiohttp.ClientSession:
         ssl_ctx = ssl.create_default_context(cafile=certifi.where())
         timeout = aiohttp.ClientTimeout(total=30, connect=15, sock_read=15)
         connector = aiohttp.TCPConnector(ssl=ssl_ctx, limit=10)
         return aiohttp.ClientSession(connector=connector, timeout=timeout)
 
-    # ──────────────────────────────────────────────────────────
-    # Smule API + ретраи
-    # ──────────────────────────────────────────────────────────
+    # ───────────────────────────────────────────────
+    # Smule API
+    # ───────────────────────────────────────────────
     async def _get_followers_page(self, session: aiohttp.ClientSession,
                                   account_id: str, offset: int = 0, limit: int = 20) -> dict | None:
         url = "https://www.smule.com/api/profile/followers"
         params = {"accountId": account_id, "offset": offset, "limit": limit}
 
-        for attempt in range(1, 4):
-            try:
-                async with session.get(url, params=params, headers=self.headers) as resp:
-                    if resp.status == 200:
-                        return await resp.json()
-                    text = await resp.text()
-                    logger.error(f"HTTP {resp.status} {url} {params} → {text[:300]}")
-                    return None
-            except aiohttp.ClientSSLError as e:
-                logger.error(f"TLS ошибка (Smule, {account_id}): {e}")
+        try:
+            async with session.get(url, params=params, headers=self.headers) as resp:
+                if resp.status == 200:
+                    return await resp.json()
+                text = await resp.text()
+                logger.error(f"HTTP {resp.status} {url} {params} → {text[:300]}")
                 return None
-            except Exception as e:
-                logger.warning(f"Попытка {attempt}/3, ошибка сети ({account_id}): {e}")
-                await asyncio.sleep(1.5 * attempt)
-        return None
+        except Exception as e:
+            logger.error(f"Ошибка сети ({account_id}): {e}")
+            return None
 
     async def _get_all_followers(self, session: aiohttp.ClientSession, account_id: str) -> list[dict]:
         all_followers: list[dict] = []
@@ -163,9 +154,9 @@ class SmuleFollowersBot:
 
         return all_followers
 
-    # ──────────────────────────────────────────────────────────
+    # ───────────────────────────────────────────────
     # Обработка и уведомления
-    # ──────────────────────────────────────────────────────────
+    # ───────────────────────────────────────────────
     @staticmethod
     def _extract_info(f: dict) -> dict:
         return {
@@ -301,9 +292,9 @@ class SmuleFollowersBot:
                 await asyncio.sleep(60)
 
 
-# ──────────────────────────────────────────────────────────────
+# ───────────────────────────────────────────────
 # main
-# ──────────────────────────────────────────────────────────────
+# ───────────────────────────────────────────────
 async def main():
     TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
     CHAT_ID = os.getenv("CHAT_ID")
