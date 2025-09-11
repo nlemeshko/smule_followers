@@ -34,10 +34,10 @@ ACCOUNT_ALIASES = {
 
 class SmuleFollowersBot:
     def __init__(self, telegram_token: str, chat_id: str, account_ids):
-        # Таймаут через httpx
+        # httpx.Client с таймаутом
         timeout = httpx.Timeout(30.0, read=30.0)
-        client = httpx.AsyncClient(timeout=timeout)
-        self.bot = Bot(token=telegram_token, client=client)
+        client = httpx.Client(timeout=timeout)
+        self.bot = Bot(token=telegram_token, request=Bot.build_request(client=client))
 
         self.chat_id = chat_id
         self.account_ids = account_ids if isinstance(account_ids, list) else [account_ids]
