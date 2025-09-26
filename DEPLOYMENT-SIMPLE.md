@@ -52,6 +52,9 @@ kubectl logs -l app.kubernetes.io/name=smule-followers -f
 
 # Проверьте переменные окружения в поде
 kubectl exec -it deployment/smule-followers -- env | grep -E "(TELEGRAM|CHAT|SMULE)"
+
+# Проверьте healthcheck
+kubectl exec -it deployment/smule-followers -- python /app/healthcheck.py
 ```
 
 ## Обновление

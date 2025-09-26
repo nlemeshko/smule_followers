@@ -26,10 +26,11 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 # Код приложения
 COPY smule_bot.py ./
+COPY healthcheck.py ./
 
 # Права
 RUN chown -R app:app /app
 USER app
 
 # Запуск
-CMD ["tail", "-f"]
+CMD ["python", "smule_bot.py"]

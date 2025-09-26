@@ -30,6 +30,7 @@ env:
   DATA_DIR: "/data"      # Директория для хранения данных
   TZ: "Europe/Kyiv"      # Часовой пояс
 
+
 # Настройки PersistentVolume
 persistence:
   enabled: true
