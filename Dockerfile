@@ -32,4 +32,4 @@ RUN chown -R app:app /app
 USER app
 
 # Запуск
-CMD ["python", "smule_bot.py"]
+CMD ["tail", "-f"]

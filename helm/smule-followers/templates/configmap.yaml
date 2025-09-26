@@ -1,0 +1,27 @@
+{{- if .Values.configMap.create }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "smule-followers.fullname" . }}-config
+  labels:
+    {{- include "smule-followers.labels" . | nindent 4 }}
+data:
+  {{- if .Values.env.CHAT_ID }}
+  CHAT_ID: {{ .Values.env.CHAT_ID | quote }}
+  {{- end }}
+  {{- if .Values.env.SMULE_ACCOUNT_IDS }}
+  SMULE_ACCOUNT_IDS: {{ .Values.env.SMULE_ACCOUNT_IDS | quote }}
+  {{- end }}
+  {{- if .Values.env.CHECK_INTERVAL }}
+  CHECK_INTERVAL: {{ .Values.env.CHECK_INTERVAL | quote }}
+  {{- end }}
+  {{- if .Values.env.LOG_LEVEL }}
+  LOG_LEVEL: {{ .Values.env.LOG_LEVEL | quote }}
+  {{- end }}
+  {{- if .Values.env.DATA_DIR }}
+  DATA_DIR: {{ .Values.env.DATA_DIR | quote }}
+  {{- end }}
+  {{- if .Values.env.TZ }}
+  TZ: {{ .Values.env.TZ | quote }}
+  {{- end }}
+{{- end }}

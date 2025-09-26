@@ -1,4 +1,4 @@
-name: smule-followers
+name: SMULE-FOLLOWERS
 
 on:
   push:
@@ -15,6 +15,8 @@ jobs:
   build:
 
     runs-on: ubuntu-latest
+    outputs:
+      new_tag: ${{ steps.tag.outputs.new_tag }}
     permissions:
       contents: read
       packages: write
@@ -60,3 +62,68 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main'
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+
+      - name: Setup Helm
+        uses: azure/setup-helm@v3
+        with:
+          version: '3.12.0'
+
+      - name: Setup kubectl
+        uses: azure/setup-kubectl@v3
+        with:
+          version: 'v1.28.0'
+
+      - name: Configure kubectl for K3s
+        run: |
+          echo "${{ secrets.K3S_KUBECONFIG }}" | base64 -d > kubeconfig
+          chmod 600 kubeconfig
+          export KUBECONFIG=kubeconfig
+          kubectl config set-context --current --namespace=default
+          
+      - name: Check if secret exists
+        run: |
+          export KUBECONFIG=kubeconfig
+          if ! kubectl get secret env -n smule-followers; then
+            echo "❌ Secret 'env' not found in namespace smule-followers"
+            echo "Please create the secret first:"
+            echo "kubectl create secret generic env \\"
+            echo "  --from-literal=TELEGRAM_TOKEN='your_token' \\"
+            echo "  --from-literal=CHAT_ID='your_chat_id' \\"
+            echo "  --from-literal=SMULE_ACCOUNT_IDS='96242367,3150102762' \\"
+            echo "  -n smule-followers"
+            exit 1
+          fi
+
+      - name: Get latest tag
+        id: get_tag
+        run: |
+          echo "tag=${{ needs.build.outputs.new_tag }}" >> $GITHUB_OUTPUT
+
+      - name: Deploy to K3s with Helm
+        run: |
+          export KUBECONFIG=kubeconfig
+          helm upgrade --install smule-followers ./helm/smule-followers \
+            --set image.tag=${{ steps.get_tag.outputs.tag }} \
+            --set image.repository=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }} \
+            --set existingSecret.name=env \
+            --namespace smule-followers \
+            --create-namespace \
+            --wait \
+            --timeout=5m
+            
+      - name: Verify deployment
+        run: |
+          export KUBECONFIG=kubeconfig
+          echo "📊 Checking deployment status..."
+          kubectl get pods -n smule-followers -l app.kubernetes.io/name=smule-followers
+          kubectl get pvc -n smule-followers -l app.kubernetes.io/name=smule-followers
+          echo "✅ Deployment completed successfully!"

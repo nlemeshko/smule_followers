@@ -1,0 +1,57 @@
+# Пример конфигурации для smule-followers
+# Скопируйте этот файл в values.yaml и заполните ваши значения
+
+replicaCount: 1
+
+image:
+  repository: ghcr.io/nlemeshko/smule_followers
+  pullPolicy: IfNotPresent
+  tag: "latest"
+
+# Использование существующего секрета (рекомендуется)
+existingSecret:
+  name: "env"  # Имя вашего существующего секрета в Kubernetes
+  keys: {}     # Дополнительные переменные (опционально)
+
+# Переменные окружения (fallback, если не используется existingSecret)
+env:
+  # ОБЯЗАТЕЛЬНЫЕ ПЕРЕМЕННЫЕ - заполните эти значения
+  TELEGRAM_TOKEN: "YOUR_TELEGRAM_BOT_TOKEN_HERE"
+  CHAT_ID: "YOUR_TELEGRAM_CHAT_ID_HERE"
+  SMULE_ACCOUNT_IDS: "96242367,3150102762"  # ID аккаунтов Smule через запятую
+  
+  # ОПЦИОНАЛЬНЫЕ ПЕРЕМЕННЫЕ
+  CHECK_INTERVAL: "300"  # Интервал проверки в секундах (по умолчанию 5 минут)
+  LOG_LEVEL: "INFO"      # Уровень логирования (DEBUG, INFO, WARNING, ERROR)
+  DATA_DIR: "/data"      # Директория для хранения данных
+  TZ: "Europe/Kyiv"      # Часовой пояс
+
+# Настройки PersistentVolume
+persistence:
+  enabled: true
+  storageClass: ""  # Оставьте пустым для использования default storage class
+  accessMode: ReadWriteOnce
+  size: 1Gi
+  annotations: {}
+
+# Ресурсы
+resources:
+  limits:
+    cpu: 500m
+    memory: 512Mi
+  requests:
+    cpu: 100m
+    memory: 128Mi
+
+# Безопасность
+securityContext:
+  capabilities:
+    drop:
+    - ALL
+  readOnlyRootFilesystem: true
+  runAsNonRoot: true
+  runAsUser: 10001
+  allowPrivilegeEscalation: false
+
+podSecurityContext:
+  fsGroup: 10001

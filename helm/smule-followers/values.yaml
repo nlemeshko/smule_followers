@@ -1,0 +1,105 @@
+# Default values for smule-followers
+# This is a YAML-formatted file.
+
+replicaCount: 1
+
+image:
+  repository: ghcr.io/nlemeshko/smule_followers
+  pullPolicy: IfNotPresent
+  tag: "latest"
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+serviceAccount:
+  # Specifies whether a service account should be created
+  create: true
+  # Annotations to add to the service account
+  annotations: {}
+  # The name of the service account to use.
+  # If not set and create is true, a name is generated using the fullname template
+  name: ""
+
+podAnnotations: {}
+
+podSecurityContext:
+  fsGroup: 10001
+
+securityContext:
+  capabilities:
+    drop:
+    - ALL
+  readOnlyRootFilesystem: true
+  runAsNonRoot: true
+  runAsUser: 10001
+  allowPrivilegeEscalation: false
+
+service:
+  type: ClusterIP
+  port: 80
+
+ingress:
+  enabled: false
+  className: ""
+  annotations: {}
+  hosts:
+    - host: smule-followers.local
+      paths:
+        - path: /
+          pathType: Prefix
+  tls: []
+
+resources:
+  limits:
+    cpu: 500m
+    memory: 512Mi
+  requests:
+    cpu: 100m
+    memory: 128Mi
+
+
+nodeSelector: {}
+
+tolerations: []
+
+affinity: {}
+
+# Использование существующего секрета
+existingSecret:
+  name: "env"  # Имя вашего существующего секрета
+  keys: {}     # Дополнительные переменные (опционально)
+
+# Environment variables (fallback, если не используется existingSecret)
+env:
+  # Required variables
+  TELEGRAM_TOKEN: ""
+  CHAT_ID: ""
+  SMULE_ACCOUNT_IDS: ""
+  
+  # Optional variables
+  CHECK_INTERVAL: "300"
+  LOG_LEVEL: "INFO"
+  DATA_DIR: "/data"
+  TZ: "Europe/Kyiv"
+
+# Persistent Volume settings
+persistence:
+  enabled: true
+  storageClass: ""
+  accessMode: ReadWriteOnce
+  size: 1Gi
+  annotations: {}
+
+# ConfigMap for environment variables
+configMap:
+  create: true
+  name: ""
+
+# Secret for sensitive environment variables
+secret:
+  create: true
+  name: ""
+  # Variables that should be stored in secret
+  sensitiveVars:
+    - TELEGRAM_TOKEN
