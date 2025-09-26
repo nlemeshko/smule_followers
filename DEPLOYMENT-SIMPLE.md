@@ -2,7 +2,7 @@
 
 ## Предварительные требования
 
-1. **Создайте секрет в Kubernetes** с переменными окружения:
+1. **Создайте секрет с переменными окружения**:
 ```bash
 kubectl create secret generic env \
   --from-literal=TELEGRAM_TOKEN="ваш_токен" \
@@ -14,7 +14,16 @@ kubectl create secret generic env \
   --from-literal=TZ="Europe/Kyiv"
 ```
 
-2. **Или создайте секрет из .env файла**:
+2. **Создайте секрет для доступа к GitHub Container Registry**:
+```bash
+kubectl create secret docker-registry regcred \
+  --docker-server=ghcr.io \
+  --docker-username=YOUR_GITHUB_USERNAME \
+  --docker-password=YOUR_GITHUB_TOKEN \
+  --docker-email=YOUR_EMAIL
+```
+
+3. **Или создайте секрет из .env файла**:
 ```bash
 kubectl create secret generic env --from-env-file=.env
 ```

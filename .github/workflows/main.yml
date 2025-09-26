@@ -89,7 +89,7 @@ jobs:
           export KUBECONFIG=kubeconfig
           kubectl config set-context --current --namespace=default
           
-      - name: Check if secret exists
+      - name: Check if secrets exist
         run: |
           export KUBECONFIG=kubeconfig
           if ! kubectl get secret env -n smule-followers; then
@@ -99,6 +99,18 @@ jobs:
             echo "  --from-literal=TELEGRAM_TOKEN='your_token' \\"
             echo "  --from-literal=CHAT_ID='your_chat_id' \\"
             echo "  --from-literal=SMULE_ACCOUNT_IDS='96242367,3150102762' \\"
+            echo "  -n smule-followers"
+            exit 1
+          fi
+          
+          if ! kubectl get secret regcred -n smule-followers; then
+            echo "❌ Secret 'regcred' not found in namespace smule-followers"
+            echo "Please create the registry secret first:"
+            echo "kubectl create secret docker-registry regcred \\"
+            echo "  --docker-server=ghcr.io \\"
+            echo "  --docker-username=YOUR_GITHUB_USERNAME \\"
+            echo "  --docker-password=YOUR_GITHUB_TOKEN \\"
+            echo "  --docker-email=YOUR_EMAIL \\"
             echo "  -n smule-followers"
             exit 1
           fi

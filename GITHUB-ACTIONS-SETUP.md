@@ -8,9 +8,10 @@
 - `ACCESS_TOKEN` - Personal Access Token с правами на запись в репозиторий
 - `K3S_KUBECONFIG` - kubeconfig файл вашего K3s кластера (в base64)
 
-### 2. Создание секрета в Kubernetes
-Перед первым деплоем создайте секрет с переменными окружения в вашем кластере:
+### 2. Создание секретов в Kubernetes
+Перед первым деплоем создайте необходимые секреты в вашем кластере:
 
+**Секрет с переменными окружения:**
 ```bash
 kubectl create secret generic env \
   --from-literal=TELEGRAM_TOKEN="ваш_токен" \
@@ -20,6 +21,16 @@ kubectl create secret generic env \
   --from-literal=LOG_LEVEL="INFO" \
   --from-literal=DATA_DIR="/data" \
   --from-literal=TZ="Europe/Kyiv" \
+  -n smule-followers
+```
+
+**Секрет для доступа к GitHub Container Registry:**
+```bash
+kubectl create secret docker-registry regcred \
+  --docker-server=ghcr.io \
+  --docker-username=YOUR_GITHUB_USERNAME \
+  --docker-password=YOUR_GITHUB_TOKEN \
+  --docker-email=YOUR_EMAIL \
   -n smule-followers
 ```
 

@@ -8,6 +8,10 @@ image:
   pullPolicy: IfNotPresent
   tag: "latest"
 
+# Секреты для загрузки образов
+imagePullSecrets: 
+  - name: regcred
+
 # Использование существующего секрета (рекомендуется)
 existingSecret:
   name: "env"  # Имя вашего существующего секрета в Kubernetes
