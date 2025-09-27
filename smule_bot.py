@@ -178,20 +178,54 @@ class SmuleFollowersBot:
     async def _get_all_followers(self, session: aiohttp.ClientSession, account_id: str) -> list[dict]:
         all_followers: list[dict] = []
         offset, limit = 0, 20
+        consecutive_errors = 0
+        max_consecutive_errors = 3
 
         while True:
-            data = await self._get_followers_page(session, account_id, offset, limit)
-            if not data or "list" not in data:
-                break
+            try:
+                data = await self._get_followers_page(session, account_id, offset, limit)
+                if not data or "list" not in data:
+                    logger.warning(f"Пустой ответ от API для аккаунта {account_id}, offset={offset}")
+                    consecutive_errors += 1
+                    if consecutive_errors >= max_consecutive_errors:
+                        logger.error(f"Слишком много ошибок подряд для аккаунта {account_id}, прерываем загрузку")
+                        break
+                    await asyncio.sleep(2.0)  # Увеличиваем задержку при ошибках
+                    continue
 
-            batch = data["list"] or []
-            all_followers.extend(batch)
-            if len(batch) < limit:
-                break
+                consecutive_errors = 0  # Сбрасываем счетчик ошибок при успехе
+                batch = data["list"] or []
+                
+                if not batch:
+                    logger.info(f"Получен пустой список подписчиков для аккаунта {account_id}")
+                    break
+                
+                all_followers.extend(batch)
+                logger.debug(f"Загружено {len(batch)} подписчиков для аккаунта {account_id}, всего: {len(all_followers)}")
+                
+                if len(batch) < limit:
+                    logger.info(f"Завершена загрузка подписчиков для аккаунта {account_id}, всего: {len(all_followers)}")
+                    break
 
-            offset += limit
-            await asyncio.sleep(0.5)
+                offset += limit
+                await asyncio.sleep(0.5)
+                
+            except Exception as e:
+                consecutive_errors += 1
+                logger.error(f"Ошибка при загрузке страницы {offset} для аккаунта {account_id}: {e}")
+                
+                if consecutive_errors >= max_consecutive_errors:
+                    logger.error(f"Слишком много ошибок подряд для аккаунта {account_id}, прерываем загрузку")
+                    raise Exception(f"Не удалось загрузить данные для аккаунта {account_id} после {consecutive_errors} ошибок")
+                
+                # Увеличиваем задержку при ошибках
+                wait_time = min(2.0 * consecutive_errors, 10.0)
+                logger.info(f"Ожидание {wait_time} секунд перед повтором")
+                await asyncio.sleep(wait_time)
 
+        if not all_followers:
+            raise Exception(f"Не удалось загрузить ни одного подписчика для аккаунта {account_id}")
+            
         return all_followers
 
     # ───────────────────────────────────────────────
@@ -293,11 +327,30 @@ class SmuleFollowersBot:
             if i < len(messages) - 1:
                 await asyncio.sleep(0.5)
 
+    async def _check_account_with_retry(self, session: aiohttp.ClientSession, account_id: str, max_retries: int = 3) -> tuple[int, int]:
+        """Проверка аккаунта с повторными попытками при ошибках"""
+        for attempt in range(max_retries):
+            try:
+                return await self._check_account(session, account_id)
+            except Exception as e:
+                logger.error(f"Ошибка при проверке аккаунта {account_id} (попытка {attempt + 1}/{max_retries}): {e}")
+                if attempt < max_retries - 1:
+                    wait_time = 5 * 60  # 5 минут
+                    logger.info(f"Повторная попытка через {wait_time} секунд")
+                    await asyncio.sleep(wait_time)
+                else:
+                    logger.error(f"Не удалось проверить аккаунт {account_id} после {max_retries} попыток")
+                    # Отправляем уведомление об ошибке
+                    error_msg = f"❌ Ошибка при проверке аккаунта {ACCOUNT_ALIASES.get(account_id, account_id)}: {str(e)[:200]}"
+                    await self._send_text(error_msg)
+                    return (0, 0)
+        
+        return (0, 0)
+
     async def _check_account(self, session: aiohttp.ClientSession, account_id: str) -> tuple[int, int]:
         followers = await self._get_all_followers(session, account_id)
         if not followers:
-            logger.warning(f"Не удалось получить список подписчиков для аккаунта {account_id}")
-            return (0, 0)
+            raise Exception(f"Не удалось получить список подписчиков для аккаунта {account_id}")
 
         current_ids: set[str] = set()
         current_map: dict[str, dict] = {}
@@ -346,34 +399,43 @@ class SmuleFollowersBot:
         async with self._build_session() as session:
             total_new = 0
             total_left = 0
+            successful_checks = 0
 
             for idx, account_id in enumerate(self.account_ids):
                 try:
                     logger.info(f"Проверяем аккаунт {account_id} ({idx + 1}/{len(self.account_ids)})")
-                    new_count, left_count = await self._check_account(session, account_id)
+                    new_count, left_count = await self._check_account_with_retry(session, account_id)
                     total_new += new_count
                     total_left += left_count
+                    successful_checks += 1
                     
                     if idx < len(self.account_ids) - 1:
                         await asyncio.sleep(2.0)  # Увеличенная пауза между аккаунтами
                         
                 except Exception as e:
-                    logger.error(f"Ошибка при проверке аккаунта {account_id}: {e}")
-                    error_msg = f"❌ Ошибка при проверке аккаунта {ACCOUNT_ALIASES.get(account_id, account_id)}: {str(e)[:200]}"
+                    logger.error(f"Критическая ошибка при проверке аккаунта {account_id}: {e}")
+                    error_msg = f"❌ Критическая ошибка при проверке аккаунта {ACCOUNT_ALIASES.get(account_id, account_id)}: {str(e)[:200]}"
                     await self._send_text(error_msg)
 
-            # Отправляем сводку только если есть изменения
-            if total_new or total_left:
+            # Отправляем сводку только если есть изменения или если все проверки прошли успешно
+            if total_new or total_left or successful_checks == len(self.account_ids):
                 parts = []
                 if total_new:
                     parts.append(f"🔔 Новых: {total_new}")
                 if total_left:
                     parts.append(f"❌ Отписок: {total_left}")
-                summary = f"📊 Сводка: " + ", ".join(parts)
-                await self._send_text(summary)
+                if successful_checks < len(self.account_ids):
+                    parts.append(f"⚠️ Проверено: {successful_checks}/{len(self.account_ids)}")
+                
+                if parts:
+                    summary = f"📊 Сводка: " + ", ".join(parts)
+                    await self._send_text(summary)
 
     async def run_continuous(self, check_interval: int = 300) -> None:
         logger.info(f"Запуск непрерывного мониторинга с интервалом {check_interval} секунд")
+        
+        consecutive_failures = 0
+        max_consecutive_failures = 3
         
         while True:
             try:
@@ -382,6 +444,7 @@ class SmuleFollowersBot:
                 end_time = time.time()
                 
                 check_duration = end_time - start_time
+                consecutive_failures = 0  # Сбрасываем счетчик ошибок при успехе
                 logger.info(f"Проверка завершена за {check_duration:.2f} секунд")
                 
                 # Адаптивная задержка - если проверка заняла много времени, уменьшаем интервал ожидания
@@ -394,8 +457,23 @@ class SmuleFollowersBot:
                 logger.info("Получен сигнал остановки")
                 break
             except Exception as e:
-                logger.error(f"Неожиданная ошибка цикла: {e}")
-                await asyncio.sleep(60)  # Короткая пауза при ошибке
+                consecutive_failures += 1
+                logger.error(f"Неожиданная ошибка цикла (попытка {consecutive_failures}): {e}")
+                
+                # Отправляем уведомление о критической ошибке
+                if consecutive_failures == 1:
+                    error_msg = f"❌ Критическая ошибка в цикле мониторинга: {str(e)[:200]}"
+                    await self._send_text(error_msg)
+                elif consecutive_failures >= max_consecutive_failures:
+                    error_msg = f"❌ Критическая ошибка: {consecutive_failures} неудачных попыток подряд. Перезапуск через 5 минут."
+                    await self._send_text(error_msg)
+                    await asyncio.sleep(5 * 60)  # 5 минут при множественных ошибках
+                    consecutive_failures = 0  # Сбрасываем счетчик после длительной паузы
+                else:
+                    # Увеличиваем задержку при повторных ошибках
+                    wait_time = min(60 * consecutive_failures, 5 * 60)  # Максимум 5 минут
+                    logger.info(f"Ожидание {wait_time} секунд перед повтором")
+                    await asyncio.sleep(wait_time)
 
 
 # ───────────────────────────────────────────────
