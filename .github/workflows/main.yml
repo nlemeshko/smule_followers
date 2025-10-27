@@ -2,7 +2,7 @@ name: SMULE-FOLLOWERS
 
 on:
   push:
-    branches: [ master ]
+    branches: [ smokki ]
 
 permissions: write-all
 
