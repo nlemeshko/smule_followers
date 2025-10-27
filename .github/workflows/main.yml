@@ -123,10 +123,10 @@ jobs:
       - name: Deploy to K3s with Helm
         run: |
           export KUBECONFIG=kubeconfig
-          helm upgrade --install smule-followers ./helm/smule-followers \
+          helm upgrade --install smule-followers-smokki ./helm/smule-followers \
             --set image.tag=${{ steps.get_tag.outputs.tag }} \
             --set image.repository=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }} \
-            --set existingSecret.name=env \
+            --set existingSecret.name=env-smokki \
             --namespace smule-followers \
             --create-namespace \
             --wait \
@@ -136,6 +136,6 @@ jobs:
         run: |
           export KUBECONFIG=kubeconfig
           echo "📊 Checking deployment status..."
-          kubectl get pods -n smule-followers -l app.kubernetes.io/name=smule-followers
-          kubectl get pvc -n smule-followers -l app.kubernetes.io/name=smule-followers
+          kubectl get pods -n smule-followers -l app.kubernetes.io/name=smule-followers-smokki
+          kubectl get pvc -n smule-followers -l app.kubernetes.io/name=smule-followers-smokki
           echo "✅ Deployment completed successfully!"
