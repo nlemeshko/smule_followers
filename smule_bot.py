@@ -180,6 +180,7 @@ class SmuleFollowersBot:
         offset, limit = 0, 20
         consecutive_errors = 0
         max_consecutive_errors = 3
+        has_successful_page = False  # Флаг успешной загрузки хотя бы одной страницы
 
         while True:
             try:
@@ -189,11 +190,17 @@ class SmuleFollowersBot:
                     consecutive_errors += 1
                     if consecutive_errors >= max_consecutive_errors:
                         logger.error(f"Слишком много ошибок подряд для аккаунта {account_id}, прерываем загрузку")
+                        # Если не было ни одной успешной страницы, это ошибка API
+                        if not has_successful_page:
+                            raise Exception(f"Не удалось загрузить данные для аккаунта {account_id}: API возвращает ошибки (HTTP 418)")
+                        # Если были успешные страницы, но потом начались ошибки, возвращаем частичные данные
+                        logger.warning(f"Возвращаем частично загруженные данные для аккаунта {account_id}: {len(all_followers)} подписчиков")
                         break
                     await asyncio.sleep(2.0)  # Увеличиваем задержку при ошибках
                     continue
 
                 consecutive_errors = 0  # Сбрасываем счетчик ошибок при успехе
+                has_successful_page = True  # Отмечаем успешную загрузку
                 batch = data["list"] or []
                 
                 if not batch:
@@ -216,15 +223,21 @@ class SmuleFollowersBot:
                 
                 if consecutive_errors >= max_consecutive_errors:
                     logger.error(f"Слишком много ошибок подряд для аккаунта {account_id}, прерываем загрузку")
-                    raise Exception(f"Не удалось загрузить данные для аккаунта {account_id} после {consecutive_errors} ошибок")
+                    # Если не было ни одной успешной страницы, это ошибка API
+                    if not has_successful_page:
+                        raise Exception(f"Не удалось загрузить данные для аккаунта {account_id} после {consecutive_errors} ошибок")
+                    # Если были успешные страницы, возвращаем частичные данные
+                    logger.warning(f"Возвращаем частично загруженные данные для аккаунта {account_id}: {len(all_followers)} подписчиков")
+                    break
                 
                 # Увеличиваем задержку при ошибках
                 wait_time = min(2.0 * consecutive_errors, 10.0)
                 logger.info(f"Ожидание {wait_time} секунд перед повтором")
                 await asyncio.sleep(wait_time)
 
-        if not all_followers:
-            raise Exception(f"Не удалось загрузить ни одного подписчика для аккаунта {account_id}")
+        # Если не было ни одной успешной страницы и список пустой, это ошибка
+        if not has_successful_page and not all_followers:
+            raise Exception(f"Не удалось загрузить ни одного подписчика для аккаунта {account_id}: API возвращает ошибки")
             
         return all_followers
 
@@ -348,9 +361,23 @@ class SmuleFollowersBot:
         return (0, 0)
 
     async def _check_account(self, session: aiohttp.ClientSession, account_id: str) -> tuple[int, int]:
-        followers = await self._get_all_followers(session, account_id)
+        try:
+            followers = await self._get_all_followers(session, account_id)
+        except Exception as e:
+            # Если не удалось загрузить данные из-за ошибок API, не обрабатываем изменения
+            logger.error(f"Ошибка загрузки подписчиков для аккаунта {account_id}: {e}")
+            raise  # Пробрасываем исключение выше для обработки в _check_account_with_retry
+        
         if not followers:
-            raise Exception(f"Не удалось получить список подписчиков для аккаунта {account_id}")
+            # Пустой список может быть нормальным (нет подписчиков), но лучше проверить
+            # Если у нас уже были подписчики, а теперь список пустой, это подозрительно
+            if self.known_followers.get(account_id):
+                logger.warning(f"Получен пустой список подписчиков для аккаунта {account_id}, но ранее были подписчики. Возможно, ошибка API.")
+                # Не обрабатываем изменения, чтобы избежать ложных уведомлений
+                raise Exception(f"Подозрительно пустой список подписчиков для аккаунта {account_id} (возможно, ошибка API)")
+            # Если подписчиков никогда не было, пустой список - это нормально
+            logger.info(f"Аккаунт {account_id} не имеет подписчиков")
+            return (0, 0)
 
         current_ids: set[str] = set()
         current_map: dict[str, dict] = {}
