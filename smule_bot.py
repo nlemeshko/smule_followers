@@ -165,14 +165,21 @@ class SmuleFollowersBot:
         params = {"accountId": account_id, "offset": offset, "limit": limit}
 
         try:
+            logger.debug(f"Отправка запроса к API: {url}, params={params}")
             async with session.get(url, params=params, headers=self.headers) as resp:
+                logger.debug(f"Получен ответ: HTTP {resp.status} для аккаунта {account_id}, offset={offset}")
                 if resp.status == 200:
-                    return await resp.json()
+                    data = await resp.json()
+                    logger.debug(f"Успешно получены данные для аккаунта {account_id}, offset={offset}")
+                    return data
                 text = await resp.text()
                 logger.error(f"HTTP {resp.status} {url} {params} → {text[:300]}")
                 return None
+        except asyncio.TimeoutError as e:
+            logger.error(f"Таймаут при запросе к API для аккаунта {account_id}, offset={offset}: {e}")
+            return None
         except Exception as e:
-            logger.error(f"Ошибка сети ({account_id}): {e}")
+            logger.error(f"Ошибка сети ({account_id}, offset={offset}): {e}")
             return None
 
     async def _get_all_followers(self, session: aiohttp.ClientSession, account_id: str) -> list[dict]:
@@ -184,9 +191,10 @@ class SmuleFollowersBot:
 
         while True:
             try:
+                logger.debug(f"Запрос страницы подписчиков для аккаунта {account_id}, offset={offset}, limit={limit}")
                 data = await self._get_followers_page(session, account_id, offset, limit)
                 if not data or "list" not in data:
-                    logger.warning(f"Пустой ответ от API для аккаунта {account_id}, offset={offset}")
+                    logger.warning(f"Пустой ответ от API для аккаунта {account_id}, offset={offset}, ошибок подряд: {consecutive_errors + 1}")
                     consecutive_errors += 1
                     if consecutive_errors >= max_consecutive_errors:
                         logger.error(f"Слишком много ошибок подряд для аккаунта {account_id}, прерываем загрузку")
@@ -196,7 +204,9 @@ class SmuleFollowersBot:
                         # Если были успешные страницы, но потом начались ошибки, возвращаем частичные данные
                         logger.warning(f"Возвращаем частично загруженные данные для аккаунта {account_id}: {len(all_followers)} подписчиков")
                         break
-                    await asyncio.sleep(2.0)  # Увеличиваем задержку при ошибках
+                    wait_time = 2.0 * consecutive_errors  # Увеличиваем задержку с каждой ошибкой
+                    logger.info(f"Ожидание {wait_time:.1f} секунд перед повтором запроса (ошибка {consecutive_errors}/{max_consecutive_errors})")
+                    await asyncio.sleep(wait_time)
                     continue
 
                 consecutive_errors = 0  # Сбрасываем счетчик ошибок при успехе
@@ -344,11 +354,13 @@ class SmuleFollowersBot:
         """Проверка аккаунта с повторными попытками при ошибках"""
         for attempt in range(max_retries):
             try:
+                logger.debug(f"Попытка {attempt + 1}/{max_retries} проверки аккаунта {account_id}")
                 return await self._check_account(session, account_id)
             except Exception as e:
                 logger.error(f"Ошибка при проверке аккаунта {account_id} (попытка {attempt + 1}/{max_retries}): {e}")
                 if attempt < max_retries - 1:
-                    wait_time = 5 * 60  # 5 минут
+                    # Уменьшаем время ожидания для быстрого выхода при ошибках API
+                    wait_time = 30  # 30 секунд вместо 5 минут для быстрого выхода
                     logger.info(f"Повторная попытка через {wait_time} секунд")
                     await asyncio.sleep(wait_time)
                 else:
