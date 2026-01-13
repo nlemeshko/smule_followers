@@ -201,9 +201,8 @@ class SmuleFollowersBot:
                         # Если не было ни одной успешной страницы, это ошибка API
                         if not has_successful_page:
                             raise Exception(f"Не удалось загрузить данные для аккаунта {account_id}: API возвращает ошибки (HTTP 418)")
-                        # Если были успешные страницы, но потом начались ошибки, возвращаем частичные данные
-                        logger.warning(f"Возвращаем частично загруженные данные для аккаунта {account_id}: {len(all_followers)} подписчиков")
-                        break
+                        # Если были успешные страницы, но потом начались ошибки, НЕ возвращаем частичные данные
+                        raise Exception(f"Частичные данные для аккаунта {account_id}: загружено {len(all_followers)}, дальнейшие страницы недоступны")
                     wait_time = 2.0 * consecutive_errors  # Увеличиваем задержку с каждой ошибкой
                     logger.info(f"Ожидание {wait_time:.1f} секунд перед повтором запроса (ошибка {consecutive_errors}/{max_consecutive_errors})")
                     await asyncio.sleep(wait_time)
@@ -236,9 +235,8 @@ class SmuleFollowersBot:
                     # Если не было ни одной успешной страницы, это ошибка API
                     if not has_successful_page:
                         raise Exception(f"Не удалось загрузить данные для аккаунта {account_id} после {consecutive_errors} ошибок")
-                    # Если были успешные страницы, возвращаем частичные данные
-                    logger.warning(f"Возвращаем частично загруженные данные для аккаунта {account_id}: {len(all_followers)} подписчиков")
-                    break
+                    # Если были успешные страницы, НЕ возвращаем частичные данные
+                    raise Exception(f"Частичные данные для аккаунта {account_id}: загружено {len(all_followers)}, дальнейшие страницы недоступны")
                 
                 # Увеличиваем задержку при ошибках
                 wait_time = min(2.0 * consecutive_errors, 10.0)
