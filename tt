@@ -1,0 +1,48 @@
+template:
+  - trigger:
+      - platform: time_pattern
+        minutes: "/1"
+    sensor:
+      - name: "Power Availability Percent"
+        unit_of_measurement: "%"
+        state: >
+          {% set up_time = as_timestamp(states('sensor.svitlobot_healthcheck_last_available_time')) %}
+          {% set outage_time = as_timestamp(states('sensor.kyiv_region_4_1_next_planned_outage')) %}
+          {% if up_time is number and outage_time > up_time %}
+            {% set planned_hours = (outage_time - up_time) / 3600 %}
+            {% set power_off_ts = outage_time %}
+            {% set hours_left = (power_off_ts - as_timestamp(now())) / 3600 %}
+            {% set value = 100 - (hours_left * 2.5 + 1) %}
+            {{ [0, [100, value] | min] | max | int }}
+          {% else %}
+            100
+          {% endif %}
+  - trigger:
+      - platform: state
+        entity_id: binary_sensor.svitlobot_healthcheck_9474b0_svitlobot_status
+        to: "on"
+    condition:
+      - condition: template
+        value_template: >
+          {{ trigger.from_state is not none and
+             trigger.from_state.state in ['unknown', 'unavailable'] }}
+  - sensor:
+      - name: "svitlobot"
+        state: >
+          {% if states('sensor.jk_bms_jk_bms_discharging_power')|float > 0 %}
+            down
+          {% else %}
+            up
+          {% endif %}
+      - name: "Svitlobot Healthcheck Last Available Time"
+        state: "{{ now().isoformat() }}"
+        device_class: timestamp
+  - binary_sensor:
+      - name: "Выключение больше 4 часов"
+        unique_id: kyiv_4_1_outage_more_4h
+        state: >
+          {% set outage = states('sensor.kyiv_region_4_1_next_planned_outage') %}
+          {% set connect = states('sensor.kyiv_region_4_1_next_connectivity') %}
+          {{ (as_timestamp(outage) - as_timestamp(connect)) | int(0) > 14400 }}
+        device_class: problem  # или connectivity
+        icon: mdi:power-off

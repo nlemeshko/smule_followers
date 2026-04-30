@@ -10,6 +10,7 @@ import logging
 from datetime import datetime, timedelta
 from dotenv import load_dotenv
 import time
+from http.cookies import SimpleCookie
 
 # ───────────────────────────────────────────────
 # env + логирование
@@ -77,6 +78,7 @@ class SmuleFollowersBot:
         self.chat_id = chat_id
         self.account_ids = account_ids if isinstance(account_ids, list) else [account_ids]
         self.rate_limiter = TelegramRateLimiter()
+        self.smule_cookie = os.getenv("SMULE_COOKIE", "").strip()
 
         # Заголовки к Smule API
         self.headers = {
@@ -88,6 +90,11 @@ class SmuleFollowersBot:
             "Cache-Control": "no-cache",
             "Pragma": "no-cache",
             "Connection": "keep-alive",
+            "Origin": "https://www.smule.com",
+            "Referer": "https://www.smule.com/",
+            "Sec-Fetch-Dest": "empty",
+            "Sec-Fetch-Mode": "cors",
+            "Sec-Fetch-Site": "same-origin",
         }
 
         # Известные подписчики и кэш метаданных
@@ -150,11 +157,30 @@ class SmuleFollowersBot:
     # ───────────────────────────────────────────────
     # HTTP-сессия с валидным CA (certifi)
     # ───────────────────────────────────────────────
+    @staticmethod
+    def _parse_cookie_header(cookie_header: str) -> dict[str, str]:
+        cookies: dict[str, str] = {}
+        if not cookie_header:
+            return cookies
+
+        parsed = SimpleCookie()
+        parsed.load(cookie_header)
+        for key, morsel in parsed.items():
+            cookies[key] = morsel.value
+        return cookies
+
     def _build_session(self) -> aiohttp.ClientSession:
         ssl_ctx = ssl.create_default_context(cafile=certifi.where())
         timeout = aiohttp.ClientTimeout(total=10, connect=2, sock_read=15)
         connector = aiohttp.TCPConnector(ssl=ssl_ctx, limit=10)
-        return aiohttp.ClientSession(connector=connector, timeout=timeout)
+        cookies = self._parse_cookie_header(self.smule_cookie)
+        if self.smule_cookie and not cookies:
+            logger.warning("SMULE_COOKIE задан, но не удалось распарсить cookie header")
+        return aiohttp.ClientSession(
+            connector=connector,
+            timeout=timeout,
+            cookies=cookies or None,
+        )
 
     # ───────────────────────────────────────────────
     # Smule API
@@ -163,16 +189,28 @@ class SmuleFollowersBot:
                                   account_id: str, offset: int = 0, limit: int = 20) -> dict | None:
         url = "https://www.smule.com/api/profile/followers"
         params = {"accountId": account_id, "offset": offset, "limit": limit}
+        headers = dict(self.headers)
+        headers["Referer"] = f"https://www.smule.com/{ACCOUNT_ALIASES.get(account_id, account_id)}"
 
         try:
             logger.debug(f"Отправка запроса к API: {url}, params={params}")
-            async with session.get(url, params=params, headers=self.headers) as resp:
+            async with session.get(url, params=params, headers=headers) as resp:
                 logger.debug(f"Получен ответ: HTTP {resp.status} для аккаунта {account_id}, offset={offset}")
                 if resp.status == 200:
                     data = await resp.json()
                     logger.debug(f"Успешно получены данные для аккаунта {account_id}, offset={offset}")
                     return data
                 text = await resp.text()
+                content_type = resp.headers.get("Content-Type", "")
+                server = resp.headers.get("Server", "")
+                is_html = "html" in content_type.lower() or text.lstrip().lower().startswith("<!doctype html")
+                if resp.status == 403 and is_html:
+                    logger.error(
+                        "Smule вернул HTML-блокировку вместо JSON. "
+                        f"HTTP {resp.status}, server={server or 'unknown'}, "
+                        f"content-type={content_type or 'unknown'}, "
+                        f"cookie_configured={'yes' if self.smule_cookie else 'no'}"
+                    )
                 logger.error(f"HTTP {resp.status} {url} {params} → {text[:300]}")
                 return None
         except asyncio.TimeoutError as e:
@@ -224,7 +262,7 @@ class SmuleFollowersBot:
                     break
 
                 offset += limit
-                await asyncio.sleep(0.5)
+                await asyncio.sleep(1.5)
                 
             except Exception as e:
                 consecutive_errors += 1
