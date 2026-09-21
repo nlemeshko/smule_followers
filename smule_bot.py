@@ -7,7 +7,8 @@ import certifi
 from telegram import Bot
 from telegram.error import TelegramError, RetryAfter
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
+from email.utils import parsedate_to_datetime
 from dotenv import load_dotenv
 import time
 from http.cookies import SimpleCookie
@@ -21,6 +22,9 @@ logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 )
 logger = logging.getLogger(__name__)
+# HTTPX пишет URL Telegram API вместе с токеном бота на уровне INFO.
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("httpcore").setLevel(logging.WARNING)
 
 # Каталог для хранения файлов (по умолчанию /app)
 DATA_DIR = os.getenv("DATA_DIR", "/app")
@@ -31,6 +35,22 @@ ACCOUNT_ALIASES = {
     "96242367": "dsip",
     "3150102762": "lithiumly"
 }
+
+
+class SmuleAPIError(Exception):
+    """Ошибка API, которую нельзя принимать за пустой список подписчиков."""
+
+    def __init__(self, message: str, *, retryable: bool = True):
+        super().__init__(message)
+        self.retryable = retryable
+
+
+class SmuleAccessBlocked(SmuleAPIError):
+    """Блокировка доступа или лимит запросов: нужна пауза для всех аккаунтов."""
+
+    def __init__(self, message: str, *, retry_after: float = 0):
+        super().__init__(message, retryable=False)
+        self.retry_after = retry_after
 
 
 class TelegramRateLimiter:
@@ -79,6 +99,11 @@ class SmuleFollowersBot:
         self.account_ids = account_ids if isinstance(account_ids, list) else [account_ids]
         self.rate_limiter = TelegramRateLimiter()
         self.smule_cookie = os.getenv("SMULE_COOKIE", "").strip()
+        self.smule_request_delay = max(0.0, float(os.getenv("SMULE_REQUEST_DELAY", "3")))
+        self.smule_block_cooldown = max(60.0, float(os.getenv("SMULE_BLOCK_COOLDOWN", "900")))
+        self._last_smule_request: float | None = None
+        self._smule_blocked_until = 0.0
+        self._smule_block_count = 0
 
         # Заголовки к Smule API
         self.headers = {
@@ -185,107 +210,105 @@ class SmuleFollowersBot:
     # ───────────────────────────────────────────────
     # Smule API
     # ───────────────────────────────────────────────
+    @staticmethod
+    def _retry_after_seconds(value: str) -> float:
+        try:
+            return max(0.0, float(int(value)))
+        except (ValueError, TypeError, OverflowError):
+            try:
+                retry_at = parsedate_to_datetime(value)
+                if retry_at.tzinfo is None:
+                    retry_at = retry_at.replace(tzinfo=timezone.utc)
+                return max(0.0, (retry_at - datetime.now(timezone.utc)).total_seconds())
+            except (ValueError, TypeError, OverflowError):
+                return 0.0
+
     async def _get_followers_page(self, session: aiohttp.ClientSession,
-                                  account_id: str, offset: int = 0, limit: int = 20) -> dict | None:
+                                  account_id: str, offset: int = 0, limit: int = 20) -> dict:
         url = "https://www.smule.com/api/profile/followers"
         params = {"accountId": account_id, "offset": offset, "limit": limit}
         headers = dict(self.headers)
         headers["Referer"] = f"https://www.smule.com/{ACCOUNT_ALIASES.get(account_id, account_id)}"
 
+        if self._last_smule_request is not None:
+            wait_time = self.smule_request_delay - (time.monotonic() - self._last_smule_request)
+            if wait_time > 0:
+                await asyncio.sleep(wait_time)
+        self._last_smule_request = time.monotonic()
+
         try:
-            logger.debug(f"Отправка запроса к API: {url}, params={params}")
+            logger.debug("Запрос Smule: аккаунт %s, offset=%s", account_id, offset)
             async with session.get(url, params=params, headers=headers) as resp:
-                logger.debug(f"Получен ответ: HTTP {resp.status} для аккаунта {account_id}, offset={offset}")
-                if resp.status == 200:
-                    data = await resp.json()
-                    logger.debug(f"Успешно получены данные для аккаунта {account_id}, offset={offset}")
-                    return data
                 text = await resp.text()
                 content_type = resp.headers.get("Content-Type", "")
                 server = resp.headers.get("Server", "")
-                is_html = "html" in content_type.lower() or text.lstrip().lower().startswith("<!doctype html")
-                if resp.status == 403 and is_html:
-                    logger.error(
-                        "Smule вернул HTML-блокировку вместо JSON. "
-                        f"HTTP {resp.status}, server={server or 'unknown'}, "
-                        f"content-type={content_type or 'unknown'}, "
-                        f"cookie_configured={'yes' if self.smule_cookie else 'no'}"
+                body_lower = text.lower()
+                is_html = "html" in content_type.lower() or body_lower.lstrip().startswith(("<!doctype html", "<html"))
+                is_challenge = resp.headers.get("cf-mitigated", "").lower() == "challenge" or (
+                    is_html and any(marker in body_lower for marker in (
+                        "just a moment", "/cdn-cgi/challenge-platform", "cf-chl-",
+                    ))
+                )
+                if is_challenge or resp.status in (401, 403, 418, 429):
+                    if is_challenge or (resp.status == 403 and is_html and server.lower() == "cloudflare"):
+                        reason = "Cloudflare требует проверку браузера вместо JSON"
+                    elif resp.status == 429:
+                        reason = "Smule ограничил частоту запросов"
+                    else:
+                        reason = "Smule отклонил доступ к API"
+                    raise SmuleAccessBlocked(
+                        f"HTTP {resp.status}: {reason} "
+                        f"(аккаунт {account_id}, offset={offset}, "
+                        f"cookie_configured={'yes' if self.smule_cookie else 'no'})",
+                        retry_after=self._retry_after_seconds(resp.headers.get("Retry-After", "")),
                     )
-                logger.error(f"HTTP {resp.status} {url} {params} → {text[:300]}")
-                return None
+                if resp.status != 200:
+                    raise SmuleAPIError(
+                        f"HTTP {resp.status} от Smule (аккаунт {account_id}, offset={offset})",
+                        retryable=resp.status >= 500 or resp.status == 408,
+                    )
+                try:
+                    data = json.loads(text)
+                except (ValueError, TypeError) as e:
+                    raise SmuleAPIError(
+                        f"Smule вернул некорректный JSON (HTTP {resp.status}, аккаунт {account_id}, offset={offset})"
+                    ) from e
+                if not isinstance(data, dict) or not isinstance(data.get("list"), list):
+                    raise SmuleAPIError(f"Неверный формат списка подписчиков (аккаунт {account_id}, offset={offset})")
+                if any(not isinstance(item, dict) or not item.get("account_id") for item in data["list"]):
+                    raise SmuleAPIError(f"Некорректные данные подписчиков (аккаунт {account_id}, offset={offset})")
+                return data
         except asyncio.TimeoutError as e:
-            logger.error(f"Таймаут при запросе к API для аккаунта {account_id}, offset={offset}: {e}")
-            return None
-        except Exception as e:
-            logger.error(f"Ошибка сети ({account_id}, offset={offset}): {e}")
-            return None
+            raise SmuleAPIError(f"Таймаут Smule (аккаунт {account_id}, offset={offset})") from e
+        except aiohttp.ClientError as e:
+            raise SmuleAPIError(f"Ошибка сети Smule (аккаунт {account_id}, offset={offset}): {e}") from e
 
     async def _get_all_followers(self, session: aiohttp.ClientSession, account_id: str) -> list[dict]:
         all_followers: list[dict] = []
         offset, limit = 0, 20
-        consecutive_errors = 0
-        max_consecutive_errors = 3
-        has_successful_page = False  # Флаг успешной загрузки хотя бы одной страницы
 
         while True:
-            try:
-                logger.debug(f"Запрос страницы подписчиков для аккаунта {account_id}, offset={offset}, limit={limit}")
-                data = await self._get_followers_page(session, account_id, offset, limit)
-                if not data or "list" not in data:
-                    logger.warning(f"Пустой ответ от API для аккаунта {account_id}, offset={offset}, ошибок подряд: {consecutive_errors + 1}")
-                    consecutive_errors += 1
-                    if consecutive_errors >= max_consecutive_errors:
-                        logger.error(f"Слишком много ошибок подряд для аккаунта {account_id}, прерываем загрузку")
-                        # Если не было ни одной успешной страницы, это ошибка API
-                        if not has_successful_page:
-                            raise Exception(f"Не удалось загрузить данные для аккаунта {account_id}: API возвращает ошибки (HTTP 418)")
-                        # Если были успешные страницы, но потом начались ошибки, НЕ возвращаем частичные данные
-                        raise Exception(f"Частичные данные для аккаунта {account_id}: загружено {len(all_followers)}, дальнейшие страницы недоступны")
-                    wait_time = 2.0 * consecutive_errors  # Увеличиваем задержку с каждой ошибкой
-                    logger.info(f"Ожидание {wait_time:.1f} секунд перед повтором запроса (ошибка {consecutive_errors}/{max_consecutive_errors})")
+            for attempt in range(3):
+                try:
+                    data = await self._get_followers_page(session, account_id, offset, limit)
+                    break
+                except SmuleAPIError as e:
+                    if not e.retryable or attempt == 2:
+                        logger.warning(
+                            "Загрузка аккаунта %s остановлена на offset=%s; %s загруженных записей не сохранены: %s",
+                            account_id, offset, len(all_followers), e,
+                        )
+                        raise
+                    wait_time = 2.0 * (attempt + 1)
+                    logger.warning("%s; повтор страницы через %.0f с (попытка %s/3)", e, wait_time, attempt + 2)
                     await asyncio.sleep(wait_time)
-                    continue
 
-                consecutive_errors = 0  # Сбрасываем счетчик ошибок при успехе
-                has_successful_page = True  # Отмечаем успешную загрузку
-                batch = data["list"] or []
-                
-                if not batch:
-                    logger.info(f"Получен пустой список подписчиков для аккаунта {account_id}")
-                    break
-                
-                all_followers.extend(batch)
-                logger.debug(f"Загружено {len(batch)} подписчиков для аккаунта {account_id}, всего: {len(all_followers)}")
-                
-                if len(batch) < limit:
-                    logger.info(f"Завершена загрузка подписчиков для аккаунта {account_id}, всего: {len(all_followers)}")
-                    break
-
-                offset += limit
-                await asyncio.sleep(1.5)
-                
-            except Exception as e:
-                consecutive_errors += 1
-                logger.error(f"Ошибка при загрузке страницы {offset} для аккаунта {account_id}: {e}")
-                
-                if consecutive_errors >= max_consecutive_errors:
-                    logger.error(f"Слишком много ошибок подряд для аккаунта {account_id}, прерываем загрузку")
-                    # Если не было ни одной успешной страницы, это ошибка API
-                    if not has_successful_page:
-                        raise Exception(f"Не удалось загрузить данные для аккаунта {account_id} после {consecutive_errors} ошибок")
-                    # Если были успешные страницы, НЕ возвращаем частичные данные
-                    raise Exception(f"Частичные данные для аккаунта {account_id}: загружено {len(all_followers)}, дальнейшие страницы недоступны")
-                
-                # Увеличиваем задержку при ошибках
-                wait_time = min(2.0 * consecutive_errors, 10.0)
-                logger.info(f"Ожидание {wait_time} секунд перед повтором")
-                await asyncio.sleep(wait_time)
-
-        # Если не было ни одной успешной страницы и список пустой, это ошибка
-        if not has_successful_page and not all_followers:
-            raise Exception(f"Не удалось загрузить ни одного подписчика для аккаунта {account_id}: API возвращает ошибки")
-            
-        return all_followers
+            batch = data["list"]
+            all_followers.extend(batch)
+            if len(batch) < limit:
+                logger.info("Завершена загрузка подписчиков для аккаунта %s, всего: %s", account_id, len(all_followers))
+                return all_followers
+            offset += limit
 
     # ───────────────────────────────────────────────
     # Обработка и уведомления
@@ -392,6 +415,9 @@ class SmuleFollowersBot:
             try:
                 logger.debug(f"Попытка {attempt + 1}/{max_retries} проверки аккаунта {account_id}")
                 return await self._check_account(session, account_id)
+            except SmuleAPIError:
+                # Повторы уже выполнены для конкретной страницы. Не начинаем с нуля.
+                raise
             except Exception as e:
                 logger.error(f"Ошибка при проверке аккаунта {account_id} (попытка {attempt + 1}/{max_retries}): {e}")
                 if attempt < max_retries - 1:
@@ -401,20 +427,13 @@ class SmuleFollowersBot:
                     await asyncio.sleep(wait_time)
                 else:
                     logger.error(f"Не удалось проверить аккаунт {account_id} после {max_retries} попыток")
-                    # Отправляем уведомление об ошибке
-                    error_msg = f"❌ Ошибка при проверке аккаунта {ACCOUNT_ALIASES.get(account_id, account_id)}: {str(e)[:200]}"
-                    await self._send_text(error_msg)
-                    return (0, 0)
+                    raise
         
         return (0, 0)
 
     async def _check_account(self, session: aiohttp.ClientSession, account_id: str) -> tuple[int, int]:
-        try:
-            followers = await self._get_all_followers(session, account_id)
-        except Exception as e:
-            # Если не удалось загрузить данные из-за ошибок API, не обрабатываем изменения
-            logger.error(f"Ошибка загрузки подписчиков для аккаунта {account_id}: {e}")
-            raise  # Пробрасываем исключение выше для обработки в _check_account_with_retry
+        # Обрабатываем изменения только после полной загрузки всех страниц.
+        followers = await self._get_all_followers(session, account_id)
         
         if not followers:
             # Пустой список может быть нормальным (нет подписчиков), но лучше проверить
@@ -471,6 +490,10 @@ class SmuleFollowersBot:
         return (len(new_followers_messages), len(unfollow_messages))
 
     async def check_new_followers(self) -> None:
+        remaining = self._smule_blocked_until - time.monotonic()
+        if remaining > 0:
+            logger.info("Проверки Smule приостановлены, осталось %.0f секунд", remaining)
+            return
         async with self._build_session() as session:
             total_new = 0
             total_left = 0
@@ -487,10 +510,27 @@ class SmuleFollowersBot:
                     if idx < len(self.account_ids) - 1:
                         await asyncio.sleep(2.0)  # Увеличенная пауза между аккаунтами
                         
+                except SmuleAccessBlocked as e:
+                    self._smule_block_count += 1
+                    cooldown = max(
+                        self.smule_block_cooldown * 2 ** min(self._smule_block_count - 1, 2),
+                        e.retry_after,
+                    )
+                    self._smule_blocked_until = time.monotonic() + cooldown
+                    logger.warning("%s. Все запросы к Smule приостановлены на %.0f секунд", e, cooldown)
+                    await self._send_text(
+                        f"⚠️ {e}\nПроверки Smule приостановлены на {cooldown / 60:.0f} мин. "
+                        "Неполные данные не сохранены."
+                    )
+                    break
                 except Exception as e:
-                    logger.error(f"Критическая ошибка при проверке аккаунта {account_id}: {e}")
-                    error_msg = f"❌ Критическая ошибка при проверке аккаунта {ACCOUNT_ALIASES.get(account_id, account_id)}: {str(e)[:200]}"
+                    logger.error(f"Ошибка при проверке аккаунта {account_id}: {e}")
+                    error_msg = f"❌ Ошибка при проверке аккаунта {ACCOUNT_ALIASES.get(account_id, account_id)}: {str(e)[:200]}"
                     await self._send_text(error_msg)
+
+            if successful_checks == len(self.account_ids):
+                self._smule_block_count = 0
+                self._smule_blocked_until = 0.0
 
             # Отправляем сводку только если есть изменения или если все проверки прошли успешно
             if total_new or total_left or successful_checks == len(self.account_ids):
@@ -523,7 +563,7 @@ class SmuleFollowersBot:
                 logger.info(f"Проверка завершена за {check_duration:.2f} секунд")
                 
                 # Адаптивная задержка - если проверка заняла много времени, уменьшаем интервал ожидания
-                actual_interval = max(check_interval - check_duration, 60)  # Минимум 60 секунд
+                actual_interval = max(check_interval - check_duration, 60, self._smule_blocked_until - time.monotonic())
                 logger.info(f"Следующая проверка через {actual_interval:.0f} секунд")
                 
                 await asyncio.sleep(actual_interval)
