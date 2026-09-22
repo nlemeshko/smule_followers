@@ -517,10 +517,9 @@ class SmuleFollowersBot:
                         e.retry_after,
                     )
                     self._smule_blocked_until = time.monotonic() + cooldown
-                    logger.warning("%s. Все запросы к Smule приостановлены на %.0f секунд", e, cooldown)
-                    await self._send_text(
-                        f"⚠️ {e}\nПроверки Smule приостановлены на {cooldown / 60:.0f} мин. "
-                        "Неполные данные не сохранены."
+                    logger.warning(
+                        "%s. Все запросы к Smule приостановлены на %.0f секунд. Неполные данные не сохранены.",
+                        e, cooldown,
                     )
                     break
                 except Exception as e:

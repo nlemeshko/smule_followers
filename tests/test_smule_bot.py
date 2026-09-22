@@ -119,13 +119,15 @@ class SmuleFailuresTest(unittest.IsolatedAsyncioTestCase):
         before = [p.read_bytes() for p in files]
         batch = [{"account_id": i} for i in range(1, 21)]
         session = session_with(response(payload={"list": batch}), response(403))
-        with patch.object(self.bot, "_build_session", return_value=session):
+        with patch.object(self.bot, "_build_session", return_value=session), \
+                self.assertLogs(smule_bot.logger, level="WARNING") as logs:
             await self.bot.check_new_followers()
         self.assertEqual([p.read_bytes() for p in files], before)
         self.assertEqual(self.bot.known_followers["first"], {"old"})
         self.assertEqual(set(self.bot.followers_meta["first"]), {"old"})
         self.bot._send_batch_messages.assert_not_awaited()
-        self.bot._send_text.assert_awaited_once()
+        self.bot._send_text.assert_not_awaited()
+        self.assertTrue(any("HTTP 403" in line and "приостановлены на 900 секунд" in line for line in logs.output))
         self.assertEqual([c.kwargs["params"]["accountId"] for c in session.get.call_args_list], ["first", "first"])
 
     async def test_cooldown_skips_network_and_notifications_then_recovers(self):
@@ -136,7 +138,7 @@ class SmuleFailuresTest(unittest.IsolatedAsyncioTestCase):
             await self.bot.check_new_followers()
             self.assertEqual(self.bot._smule_blocked_until, 7300)
             self.assertEqual(build.call_count, 1)
-            self.bot._send_text.assert_awaited_once()
+            self.bot._send_text.assert_not_awaited()
         healthy = session_with(response(payload={"list": []}), response(payload={"list": []}))
         with patch.object(smule_bot.time, "monotonic", return_value=7301), \
                 patch.object(self.bot, "_build_session", return_value=healthy):
